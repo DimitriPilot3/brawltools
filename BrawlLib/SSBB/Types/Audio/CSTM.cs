@@ -139,38 +139,42 @@ namespace BrawlLib.SSBBTypes
 
         // Below properties will find different parts of the INFO header, assuming that there are zero or one TrackInfo structures.
 
+        // It appears that some BCSTM rips (e.g. from Mystery Dungeon) overload CSTMDataInfo with some extra data at the end.
+        // This eventuality may arise during contiguous parsing, no matter whether the BCSTM contains any TrackInfo or not.
+        // So we avoid it by solely, directly accessing the 2 ref-tables below via their respective CSTMReferences above.
+        // As for setting up INFO for a new BCSTM, it's the same contiguous process - just define these references first!
+
         public CSTMReferenceList* TrackInfoRefTable {
             get {
-                return (CSTMReferenceList*)DataInfoEnd;
+                if (_trackInfoRefTableRef._dataOffset == -1)
+                    throw new NullReferenceException("This BCSTM specifies that it doesn't have a track info ref table, which we tried to return.");
+                else if (_trackInfoRefTableRef._dataOffset > sizeof(CSTMINFOHeader) - 8)
+                    Console.Error.WriteLine("There is extra data between the DataInfo and TrackInfoRefTable that will be discarded.");
+
+                CSTMReferenceList* refTable = (CSTMReferenceList*)(Address + 8 + _trackInfoRefTableRef._dataOffset);
+                return refTable;
             }
         }
-        public CSTMReferenceList* ChannelInfoRefTable {
+        private VoidPtr TrackInfoRefTableEnd {
             get {
-                if (_trackInfoRefTableRef._dataOffset == -1) {
-                    fixed (CSTMReference* x = &_streamInfoRef)
-                    {
-                        // Look to see what the _channelInfoRefTableRef says - but if it's a file we're building, it may not have been filled in yet.
-                        CSTMReferenceList* fromRef = (CSTMReferenceList*)((VoidPtr)x + _channelInfoRefTableRef._dataOffset);
-                        // If it's not filled in, give a 0x0C gap to allow for the TrackInfoRefTable.
-                        CSTMReferenceList* guess = (CSTMReferenceList*)(DataInfoEnd + 0x0C);
-                        if (fromRef > guess) {
-                            Console.Error.WriteLine("There is extra data between the DataInfo and ChannelInfoRefTable that will be discarded.");
-                            return fromRef;
-                        }
-                        return guess;
-                    }
-                }
-
                 CSTMReferenceList* prevTable = TrackInfoRefTable;
                 int* ptr = (int*)prevTable;
                 int count = prevTable->_numEntries;
                 if (count == 0) throw new Exception("Track info's ref table must be populated before channel info's ref table can be accessed.");
-                if (count == 16777216) {
-                    count = 1;
-                }
                 if (count != 1) throw new Exception("BCSTM files with more than one track data section are not supported.");
                 ptr += 1 + count * 2;
-                return (CSTMReferenceList*)ptr;
+                return ptr;
+            }
+        }
+        public CSTMReferenceList* ChannelInfoRefTable {
+            get {
+                if (_channelInfoRefTableRef._dataOffset == -1)
+                    throw new NullReferenceException("This BCSTM specifies that it doesn't have a channel info ref table, which we tried to return.");
+                else if (_trackInfoRefTableRef._dataOffset == -1 && _channelInfoRefTableRef._dataOffset > sizeof(CSTMINFOHeader) - 8)
+                    Console.Error.WriteLine("There is extra data between the DataInfo and ChannelInfoRefTable that will be discarded.");
+
+                CSTMReferenceList* refTable = (CSTMReferenceList*)(Address + 8 + _channelInfoRefTableRef._dataOffset);
+                return refTable;
             }
         }
 
@@ -217,15 +221,17 @@ namespace BrawlLib.SSBBTypes
             _tag = Tag;
             _size = size;
 
-            TrackInfoRefTable->_numEntries = 1;
-            ChannelInfoRefTable->_numEntries = channels;
-
             _streamInfoRef._type = CSTMReference.RefType.StreamInfo;
             _streamInfoRef._dataOffset = 0x18;
+
+            // Initialize the references to both ref-tables (track and channel info) prior to accessing them.
             _trackInfoRefTableRef._type = CSTMReference.RefType.ReferenceTable;
-            _trackInfoRefTableRef._dataOffset = (byte*)TrackInfoRefTable - (Address + 8);
+            _trackInfoRefTableRef._dataOffset = DataInfoEnd - (Address + 8);
+            TrackInfoRefTable->_numEntries = 1;
+
             _channelInfoRefTableRef._type = CSTMReference.RefType.ReferenceTable;
-            _channelInfoRefTableRef._dataOffset = (byte*)ChannelInfoRefTable - (Address + 8);
+            _channelInfoRefTableRef._dataOffset = TrackInfoRefTableEnd - (Address + 8);
+            ChannelInfoRefTable->_numEntries = channels;
 
             //Set single track info
             *TrackInfo = new CSTMTrackInfoStub(0x7F, 0x40);
